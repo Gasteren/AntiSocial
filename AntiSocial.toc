@@ -1,0 +1,21 @@
+## Interface: 120005
+## Title: AntiSocial
+## Notes: Minimal human interaction, maximum efficiency.
+## Author: Frost-Lightbringer
+## Version: 12.0.5
+## SavedVariables: AntiSocialDB
+## IconTexture: Interface\Icons\spell_holy_silence
+## X-Curse-Project-ID: 1549903
+## X-Category: Chat & Communication
+## OptionalDeps: Ace3
+
+Libs\embeds.xml
+
+Core.lua
+Messages.lua
+Triggers.lua
+WhisperFilter.lua
+Theme.lua
+UI.lua
+CustomFrame.lua
+FilterLogFrame.lua
