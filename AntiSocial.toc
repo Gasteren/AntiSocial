@@ -1,4 +1,4 @@
-## Interface: 120005, 120007
+## Interface: 120007
 ## Title: AntiSocial
 ## Notes: Minimal human interaction, maximum efficiency.
 ## Author: Frost-Lightbringer
