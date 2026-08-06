@@ -1,8 +1,9 @@
-## Interface: 120007
+## Interface: 120007, 120100
+
 ## Title: AntiSocial
 ## Notes: Minimal human interaction, maximum efficiency.
 ## Author: Frost-Lightbringer
-## Version: 12.0.7
+## Version: 12.1
 ## SavedVariables: AntiSocialDB
 ## IconTexture: Interface\Icons\spell_holy_silence
 ## X-Curse-Project-ID: 1549903
