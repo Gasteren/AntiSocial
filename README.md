@@ -39,8 +39,6 @@ Empty custom pools fall back to Friendly defaults, so you only have to customize
 
 ## Slash commands
 
-You can use commands or the UI /as
-
 ```
 /as                       open settings
 /as on | off | toggle
