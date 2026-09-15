@@ -85,10 +85,27 @@ local function HandleGroupRosterChange()
     AntiSocial.session.inGroup = nowInGroup
 
     if nowInGroup and not wasInGroup then
+        -- Suppress the join greeting during the login grace period. On a
+        -- reconnect or relog into a group you were already in, IsInGroup()
+        -- can briefly report false at OnEnable (roster not yet synced),
+        -- then GROUP_ROSTER_UPDATE fires with the real roster and looks
+        -- like a fresh join. The grace window swallows that false positive.
+        if AntiSocial.session.loginTime
+            and (GetTime() - AntiSocial.session.loginTime) < 15 then
+            AntiSocial:Debug("groupJoin suppressed (login grace)")
+            return
+        end
         if IsTriggerEnabled("groupJoin") and CanFire("groupJoin", 30) then
             ScheduleSend(AS.Messages:Pick("groupJoin"), nil, "groupJoin")
         end
     elseif not nowInGroup and wasInGroup then
+        -- Same grace guard: if you were removed from the group while
+        -- disconnected, don't fire a leave message on reconnect.
+        if AntiSocial.session.loginTime
+            and (GetTime() - AntiSocial.session.loginTime) < 15 then
+            AntiSocial:Debug("groupLeave suppressed (login grace)")
+            return
+        end
         if IsTriggerEnabled("groupLeave") and CanFire("groupLeave", 30) then
             local message = AS.Messages:Pick("groupLeave")
             if message then
