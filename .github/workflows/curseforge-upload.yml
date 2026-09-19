@@ -26,7 +26,7 @@ jobs:
           project_id: "1549903"
           game_endpoint: "wow"
           file_path: "AntiSocial.zip"
-          game_versions: "12.1.0"
+          game_versions: "12.1.0,1.60.1"
           release_type: "release"
           display_name: "AntiSocial - ${{ github.event.head_commit.timestamp }}"
           changelog: "${{ github.event.head_commit.message }}"
