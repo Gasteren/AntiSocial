@@ -63,14 +63,44 @@ end
 -- ---------------------------------------------------------------------------
 -- Sender classification
 -- ---------------------------------------------------------------------------
+-- Retail 12.x and Forever can hand addon code "secret" values that error when
+-- compared. Chat filters only run with readable args there, but unit names
+-- and GUIDs looked up afterwards can still be secret in restricted content.
+local function isReadable(value)
+    if issecretvalue and issecretvalue(value) then return false end
+    return value ~= nil
+end
+
+local function isUsableGUID(guid)
+    return isReadable(guid) and type(guid) == "string" and guid ~= ""
+end
+
 local function nameOnly(fullName)
     if not fullName then return nil end
     return fullName:match("^([^%-]+)") or fullName
 end
 
-local function isFriend(name)
-    if not name then return false end
-    if not C_FriendList or not C_FriendList.GetNumFriends then return false end
+-- True if `unit` is the whisper sender. Matches on GUID when possible (names
+-- can differ in format, e.g. Forever's realm-less "First Last" names) and
+-- falls back to the short name.
+local function unitIsSender(unit, short, guid)
+    if not UnitExists(unit) then return false end
+    if isUsableGUID(guid) and UnitGUID then
+        local unitGUID = UnitGUID(unit)
+        if isReadable(unitGUID) then return unitGUID == guid end
+    end
+    local unitName = UnitName(unit)
+    return short ~= nil and isReadable(unitName) and unitName == short
+end
+
+-- Whitelist checks try the sender GUID first (same APIs BadBoy uses) and
+-- keep the name scans as a fallback for clients without those APIs.
+local function isFriend(name, guid)
+    if not C_FriendList then return false end
+    if isUsableGUID(guid) and C_FriendList.IsFriend and C_FriendList.IsFriend(guid) then
+        return true
+    end
+    if not name or not C_FriendList.GetNumFriends then return false end
     local short = nameOnly(name)
     -- Trigger a fetch if the list is empty; it's a server roundtrip but cheap
     if C_FriendList.GetNumFriends() == 0 and C_FriendList.ShowFriends then
@@ -83,7 +113,11 @@ local function isFriend(name)
     return false
 end
 
-local function isBNetFriend(name)
+local function isBNetFriend(name, guid)
+    if isUsableGUID(guid) and C_BattleNet and C_BattleNet.GetGameAccountInfoByGUID
+        and C_BattleNet.GetGameAccountInfoByGUID(guid) then
+        return true
+    end
     if not name or not BNGetNumFriends then return false end
     local short = nameOnly(name)
     local total = BNGetNumFriends()
@@ -99,8 +133,10 @@ local function isBNetFriend(name)
     return false
 end
 
-local function isGuildMate(name)
-    if not name or not GetNumGuildMembers or not IsInGuild() then return false end
+local function isGuildMate(name, guid)
+    if not IsInGuild() then return false end
+    if isUsableGUID(guid) and IsGuildMember and IsGuildMember(guid) then return true end
+    if not name or not GetNumGuildMembers then return false end
     local short = nameOnly(name)
     -- Roster may be empty until we request it
     if GetNumGuildMembers() == 0 and GuildRoster then GuildRoster() end
@@ -112,15 +148,17 @@ local function isGuildMate(name)
     return false
 end
 
-local function isInMyGroup(name)
-    if not name or not IsInGroup() then return false end
+local function isInMyGroup(name, guid)
+    if not IsInGroup() then return false end
+    if isUsableGUID(guid) and C_PartyInfo and C_PartyInfo.IsGUIDInGroup
+        and C_PartyInfo.IsGUIDInGroup(guid) then
+        return true
+    end
     local short = nameOnly(name)
     local prefix = IsInRaid() and "raid" or "party"
     local count = GetNumGroupMembers() or 0
     for i = 1, count do
-        local unit = prefix .. i
-        local unitName = UnitName(unit)
-        if unitName == short then return true end
+        if unitIsSender(prefix .. i, short, guid) then return true end
     end
     return false
 end
@@ -128,8 +166,31 @@ end
 -- ---------------------------------------------------------------------------
 -- Level lookup
 -- ---------------------------------------------------------------------------
-local function tryGetLevelImmediate(name)
-    if not name then return nil end
+local function readableLevel(level)
+    if isReadable(level) and type(level) == "number" and level > 0 then return level end
+    return nil
+end
+
+-- Primary source: Retail and Forever return the sender's level as the 8th
+-- value of GetPlayerInfoByGUID (nil when unknown), the same lookup
+-- BadBoy_Levels uses. Classic clients don't return it.
+local function levelFromGUID(guid)
+    if not GetPlayerInfoByGUID or not isUsableGUID(guid) then return nil end
+    local ok, _, _, _, _, _, _, _, level = pcall(GetPlayerInfoByGUID, guid)
+    if not ok then return nil end
+    return readableLevel(level)
+end
+
+-- Fallback: only works when the sender is a unit we can see (target,
+-- mouseover, focus, group members, or any token UnitTokenFromGUID knows).
+local function levelFromUnits(name, guid)
+    if isUsableGUID(guid) and UnitTokenFromGUID then
+        local unit = UnitTokenFromGUID(guid)
+        if isReadable(unit) then
+            local lvl = readableLevel(UnitLevel(unit))
+            if lvl then return lvl end
+        end
+    end
     local short = nameOnly(name)
     local candidates = { "target", "mouseover", "focus" }
     if IsInGroup() then
@@ -139,12 +200,16 @@ local function tryGetLevelImmediate(name)
         end
     end
     for _, unit in ipairs(candidates) do
-        if UnitExists(unit) and UnitName(unit) == short then
-            local lvl = UnitLevel(unit)
-            if lvl and lvl > 0 then return lvl end
+        if unitIsSender(unit, short, guid) then
+            local lvl = readableLevel(UnitLevel(unit))
+            if lvl then return lvl end
         end
     end
     return nil
+end
+
+local function tryGetLevelImmediate(name, guid)
+    return levelFromGUID(guid) or levelFromUnits(name, guid)
 end
 
 -- ---------------------------------------------------------------------------
@@ -152,24 +217,30 @@ end
 -- ---------------------------------------------------------------------------
 -- Returns true if the whisper should be filtered, false if shown,
 -- nil if we need to defer for a level check.
-local function shouldFilter(senderName, level)
+local function shouldFilter(senderName, level, guid, flag)
     local c = cfg()
     if not c or not c.enabled then return false end
 
+    -- Never hide whispers from Blizzard staff
+    if flag == "GM" or flag == "DEV" then
+        debugLog(senderName, "allowed (" .. flag .. ")")
+        return false
+    end
+
     -- Whitelist
-    if c.allowFriends and isFriend(senderName) then
+    if c.allowFriends and isFriend(senderName, guid) then
         debugLog(senderName, "allowed (friend)")
         return false
     end
-    if c.allowBNetFriends and isBNetFriend(senderName) then
+    if c.allowBNetFriends and isBNetFriend(senderName, guid) then
         debugLog(senderName, "allowed (BNet friend)")
         return false
     end
-    if c.allowGuild and isGuildMate(senderName) then
+    if c.allowGuild and isGuildMate(senderName, guid) then
         debugLog(senderName, "allowed (guild)")
         return false
     end
-    if c.allowGroup and isInMyGroup(senderName) then
+    if c.allowGroup and isInMyGroup(senderName, guid) then
         debugLog(senderName, "allowed (group)")
         return false
     end
@@ -343,7 +414,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Pending queue (for deferred level-checked whispers)
 -- ---------------------------------------------------------------------------
-local pending = {}
+-- Each held whisper is its own entry and its timers capture it directly, so
+-- a second whisper from the same sender can't replace (and drop) the first.
 
 local function showHeldMessage(entry)
     if entry.shown then return end
@@ -360,9 +432,9 @@ end
 
 local function evaluateAndHandle(entry)
     if entry.handled then return end
-    local level = tryGetLevelImmediate(entry.sender)
+    local level = tryGetLevelImmediate(entry.sender, entry.guid)
     if level then entry.level = level end
-    local verdict = shouldFilter(entry.sender, entry.level)
+    local verdict = shouldFilter(entry.sender, entry.level, entry.guid, entry.flag)
     if verdict == true then
         entry.handled = true
         logFiltered(entry.sender, entry.level, entry.message, "whisper")
@@ -374,17 +446,12 @@ local function evaluateAndHandle(entry)
     end
 end
 
-local function timeoutPending(senderName)
-    local entry = pending[senderName]
-    if not entry or entry.handled then
-        pending[senderName] = nil
-        return
-    end
+local function timeoutPending(entry)
+    if entry.handled then return end
     -- Fail open: show the message
     entry.handled = true
-    debugLog(senderName, "level check timed out, showing message")
+    debugLog(entry.sender, "level check timed out, showing message")
     showHeldMessage(entry)
-    pending[senderName] = nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -427,7 +494,8 @@ local function cleanupSeenVerdicts()
     end
 end
 
--- In-game whisper. We only care about the first 2 args; rest are ignored.
+-- In-game whisper. Besides message and sender we read arg6 (specialFlags,
+-- "GM"/"DEV" for Blizzard staff) and arg12 (sender GUID).
 local function whisperFilter(_, _, message, sender, ...)
     -- Replay cached verdict for duplicate frame invocations
     local cached = getCachedVerdict(sender, message)
@@ -443,8 +511,10 @@ local function whisperFilter(_, _, message, sender, ...)
         return false
     end
 
-    local level = tryGetLevelImmediate(sender)
-    local verdict = shouldFilter(sender, level)
+    local flag = select(4, ...)
+    local guid = select(10, ...)
+    local level = tryGetLevelImmediate(sender, guid)
+    local verdict = shouldFilter(sender, level, guid, flag)
 
     if verdict == true then
         logFiltered(sender, level, message, "whisper")
@@ -459,24 +529,20 @@ local function whisperFilter(_, _, message, sender, ...)
     -- Defer for level check
     debugLog(sender, "level unknown, deferring up to " .. LEVEL_QUERY_TIMEOUT .. "s")
     local entry = {
-        sender = sender, message = message, level = nil,
+        sender = sender, guid = guid, flag = flag, message = message, level = nil,
         handled = false, shown = false,
     }
-    pending[sender] = entry
 
-    if NotifyInspect and UnitExists("target") and UnitName("target") == sender then
+    if NotifyInspect and unitIsSender("target", nameOnly(sender), guid) then
         NotifyInspect("target")
     end
 
-    AntiSocial:ScheduleTimer(function()
-        local e = pending[sender]
-        if e and not e.handled then evaluateAndHandle(e) end
-    end, 0.5)
-    AntiSocial:ScheduleTimer(function()
-        local e = pending[sender]
-        if e and not e.handled then evaluateAndHandle(e) end
-    end, 1.2)
-    AntiSocial:ScheduleTimer(function() timeoutPending(sender) end, LEVEL_QUERY_TIMEOUT)
+    local function retry()
+        if not entry.handled then evaluateAndHandle(entry) end
+    end
+    AntiSocial:ScheduleTimer(retry, 0.5)
+    AntiSocial:ScheduleTimer(retry, 1.2)
+    AntiSocial:ScheduleTimer(function() timeoutPending(entry) end, LEVEL_QUERY_TIMEOUT)
 
     setCachedVerdict(sender, message, true)
     return true
