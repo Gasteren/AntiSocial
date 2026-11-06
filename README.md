@@ -21,6 +21,7 @@ Hides incoming whispers from your chat frame:
 
 - Block low-level characters (configurable threshold, default L10)
 - Block all whispers except from your friends, guild, or group
+- Whispers from Blizzard GMs are never blocked
 - Sends a single static rejection notice back to blocked senders, throttled to once per minute per sender
 - Hidden from your own chat (you don't see your own auto-reply)
 - Filter log keeps a record of who got blocked, with timestamps
