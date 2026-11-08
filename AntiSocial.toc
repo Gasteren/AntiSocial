@@ -2,7 +2,7 @@
 
 ## Title: AntiSocial
 ## Notes: Minimal human interaction, maximum efficiency.
-## Author: Frost-Lightbringer
+## Author: Frost Forever | EU Normal Ruleset
 ## Version: 1.0.0
 ## SavedVariables: AntiSocialDB
 ## IconTexture: Interface\Icons\spell_holy_silence
