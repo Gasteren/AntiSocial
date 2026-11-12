@@ -95,7 +95,8 @@ local function IsOtherGroupMember(name, guid)
     else
         key, lookup = name and name:match("^([^%-]+)"), UnitName
     end
-    if not key or key == lookup("player") then return false end
+    local own = lookup("player")
+    if not key or IsSecret(own) or key == own then return false end
 
     local prefix = IsInRaid() and "raid" or "party"
     for i = 1, GetNumGroupMembers() do
@@ -176,7 +177,8 @@ local function HandleAchievement(msg, playerName, ...)
     -- Achievement broadcasts also cover nearby players, guildmates and you.
     if not IsInGroup() then return end
     if not IsOtherGroupMember(playerName, guid) then return end
-    if not CanFire("achievement_" .. playerName, 10) then return end
+    -- One congratulation per burst: a whole group often earns an achievement together.
+    if not CanFire("achievement", 10) then return end
 
     local achievementID = msg:match("Hachievement:(%d+)")
     local rare = false
@@ -196,7 +198,7 @@ local function HandleSystemMessage(msg)
     local name = msg:match("^(%S+) has reached level %d+")
     if not name or not IsOtherGroupMember(name) then return end
 
-    if not CanFire("levelUp_" .. name, 10) then return end
+    if not CanFire("levelUp", 10) then return end
     ScheduleSend(AS.Messages:Pick("levelUp"), nil, "levelUp")
 end
 
