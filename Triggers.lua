@@ -4,14 +4,16 @@ AS.Triggers = {}
 
 -- Per-event handlers. Avoids comparing the event name (which can be a
 -- tainted "secret string" in recent WoW versions, breaking == comparisons).
+-- AceEvent calls function handlers as handler(event, ...), so the event
+-- payload (message text first) starts right after the event name.
 function AS.Triggers:Register(addon)
     self.addon = addon
     addon:RegisterEvent("GROUP_ROSTER_UPDATE",       function() AS.Triggers:OnGroupRoster() end)
     addon:RegisterEvent("CHALLENGE_MODE_START",      function() AS.Triggers:OnKeyStart() end)
     addon:RegisterEvent("CHALLENGE_MODE_COMPLETED",  function() AS.Triggers:OnKeyComplete() end)
-    addon:RegisterEvent("CHAT_MSG_ACHIEVEMENT",      function(_, _, ...) AS.Triggers:OnAchievement(...) end)
-    addon:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT",function(_, _, ...) AS.Triggers:OnAchievement(...) end)
-    addon:RegisterEvent("CHAT_MSG_SYSTEM",           function(_, _, ...) AS.Triggers:OnSystemMessage(...) end)
+    addon:RegisterEvent("CHAT_MSG_ACHIEVEMENT",      function(_, ...) AS.Triggers:OnAchievement(...) end)
+    addon:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT",function(_, ...) AS.Triggers:OnAchievement(...) end)
+    addon:RegisterEvent("CHAT_MSG_SYSTEM",           function(_, ...) AS.Triggers:OnSystemMessage(...) end)
     addon:RegisterEvent("READY_CHECK",               function() AS.Triggers:OnReadyCheck() end)
     addon:RegisterEvent("PLAYER_LEVEL_UP",           function() end) -- placeholder, no-op
 end
@@ -76,6 +78,33 @@ local function IsTriggerEnabled(key)
     return p and p.enabled and p.triggers and p.triggers[key]
 end
 
+-- Retail 12.x and Forever hand chat event args to addons as "secret" values
+-- in restricted content. Addon code errors if it indexes or compares them,
+-- so those messages are skipped.
+local function IsSecret(value)
+    return issecretvalue ~= nil and issecretvalue(value)
+end
+
+-- True if the sender is someone else in our party/raid. Matches on the
+-- sender GUID when the event has one (name formats differ between clients),
+-- otherwise on the character name without realm.
+local function IsOtherGroupMember(name, guid)
+    local key, lookup
+    if type(guid) == "string" and guid ~= "" then
+        key, lookup = guid, UnitGUID
+    else
+        key, lookup = name and name:match("^([^%-]+)"), UnitName
+    end
+    if not key or key == lookup("player") then return false end
+
+    local prefix = IsInRaid() and "raid" or "party"
+    for i = 1, GetNumGroupMembers() do
+        local value = lookup(prefix .. i)
+        if value and not IsSecret(value) and value == key then return true end
+    end
+    return false
+end
+
 -- ---------------------------------------------------------------------------
 -- Handlers
 -- ---------------------------------------------------------------------------
@@ -137,18 +166,19 @@ local function HandleKeyComplete()
     AntiSocial.session.keyActive = false
 end
 
-local function HandleAchievement(msg, playerName)
+-- Chat event args: message text, sender name, ..., sender GUID (arg12).
+local function HandleAchievement(msg, playerName, ...)
+    local guid = select(10, ...)
+    if IsSecret(msg) or IsSecret(playerName) or IsSecret(guid) then return end
     if not IsTriggerEnabled("achievement") then return end
-    if not playerName or playerName == "" then return end
+    if not msg or not playerName or playerName == "" then return end
 
-    local myName, myRealm = UnitName("player")
-    local myFull = myName .. "-" .. (myRealm or GetRealmName() or "")
-    if playerName == myName or playerName == myFull then return end
-
+    -- Achievement broadcasts also cover nearby players, guildmates and you.
     if not IsInGroup() then return end
+    if not IsOtherGroupMember(playerName, guid) then return end
     if not CanFire("achievement_" .. playerName, 10) then return end
 
-    local achievementID = msg and msg:match("Hachievement:(%d+)")
+    local achievementID = msg:match("Hachievement:(%d+)")
     local rare = false
     if achievementID and GetAchievementInfo then
         local _, _, points = GetAchievementInfo(tonumber(achievementID))
@@ -159,15 +189,12 @@ local function HandleAchievement(msg, playerName)
 end
 
 local function HandleSystemMessage(msg)
-    if not msg then return end
+    if not msg or IsSecret(msg) then return end
     if not IsTriggerEnabled("levelUp") then return end
     if not IsInGroup() then return end
 
     local name = msg:match("^(%S+) has reached level %d+")
-    if not name then return end
-
-    local myName = UnitName("player")
-    if name == myName then return end
+    if not name or not IsOtherGroupMember(name) then return end
 
     if not CanFire("levelUp_" .. name, 10) then return end
     ScheduleSend(AS.Messages:Pick("levelUp"), nil, "levelUp")
